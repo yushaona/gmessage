@@ -10,6 +10,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/yushaona/gmessage/packet"
+
 	"github.com/yushaona/gmessage/server/job"
 
 	"github.com/yushaona/gmessage/server/cache"
@@ -59,36 +61,37 @@ data 数据
 }
 
 */
-func HandleMsgQueue() {
-	for {
-		select {
-		case msgData := <-cache.MsgQueue:
-			//result := "[" + msgData.ID + "]===" + msgData.Data // 将请求的数据包发给id指定的用户
-			var param gjson.GJSON
-			param.Load(msgData.Data)
-			//fmt.Println("result", result)
-			var msgResult gjson.GJSON
-			msgResponse, err := HandleData(&param) //
-			fmt.Println(msgResponse.ToString())
-			if err != nil {
-				msgResult.SetInt("code", 0)
-				msgResult.SetString("info", err.Error())
-			} else {
-				msgResult.SetInt("code", 1)
-				msgResult.SetString("info", "ok")
-				msgResult.SetObject("data", msgResponse)
-			}
-			//cache.GetConn(msgData.ID).Write([]byte(msgResult.ToString()))
-		}
-	}
-}
+// func HandleMsgQueue() {
+// 	for {
+// 		select {
+// 		case msgData := <-cache.MsgQueue:
+// 			//result := "[" + msgData.ID + "]===" + msgData.Data // 将请求的数据包发给id指定的用户
+// 			var param gjson.GJSON
+// 			param.Load(msgData.Data)
+// 			//fmt.Println("result", result)
+// 			var msgResult gjson.GJSON
+// 			msgResponse, err := HandleData(&param) //
+// 			fmt.Println(msgResponse.ToString())
+// 			if err != nil {
+// 				msgResult.SetInt("code", 0)
+// 				msgResult.SetString("info", err.Error())
+// 			} else {
+// 				msgResult.SetInt("code", 1)
+// 				msgResult.SetString("info", "ok")
+// 				msgResult.SetObject("data", msgResponse)
+// 			}
+// 			//cache.GetConn(msgData.ID).Write([]byte(msgResult.ToString()))
+// 		}
+// 	}
+// }
 func execute(c net.Conn) {
 
 	var user *cache.UserInfo = nil
 	var quitChannel = make(chan struct{})
 
-	//var updateTime time.Time
-	buf := make([]byte, 1024) // 单次接收的数据流
+	cacheBuf := make([]byte, 0)  // 缓存的数据包
+	packetBuf := make([]byte, 0) //完整的数据包
+	buf := make([]byte, 1024)    // 单次接收的数据流
 	for {
 		n, err := c.Read(buf)
 		if err != nil || err == io.EOF {
@@ -96,89 +99,95 @@ func execute(c net.Conn) {
 			break
 		}
 
-		data := string(buf[:n])
-		var main gjson.GJSON
-		err = main.Load(data)
+		//TCP数据包拆包
+		packetBuf, cacheBuf = packet.UnPack(append(cacheBuf, buf[:n]...))
 
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
+		if len(packetBuf) > 0 {
 
-		/*
-			{
-				"userid":"462262902976417792",
-
-				"funcid":300,
-				"session":"1",
-				"macaddr":"111231321-"
-
+			fmt.Println("packetBuf", string(packetBuf))
+			var main gjson.GJSON
+			err = main.Load(string(packetBuf))
+			if err != nil {
+				fmt.Println(err)
+				continue
 			}
-		*/
-		funcid := main.GetInt("funcid")
 
-		switch funcid {
-		case 1: //用户登录
-			{
-				userid := main.GetString("userid")
-				if userid == "" {
-					var obj gjson.GJSON
-					obj.SetInt("code", 0)
-					obj.SetString("info", "userid不能为空")
-					c.Write([]byte(obj.ToString()))
-					continue
+			/*
+				{
+					"userid":"462262902976417792",
+
+					"funcid":300,
+					"session":"1",
+					"macaddr":"111231321-"
+
 				}
-				if user == nil { // 一个socket只能初始化一次用户登录 -- 相当于当前的socket就和user绑定到了一起,有状态的TCP连接
-					passwd := main.GetString("passwd")
-					if passwd == "123456" {
-						user = cache.CreateUser(userid, c)
-						//updateTime = time.Now()
-						cache.UserEnterChannel <- user
-						var obj gjson.GJSON
-						obj.SetInt("code", 1)
-						obj.SetString("info", "ok")
-						c.Write([]byte(obj.ToString()))
-						go UserChannel(user)
-						go UserVaild(c, quitChannel)
-					} else {
+			*/
+			funcid := main.GetInt("funcid")
+
+			switch funcid {
+			case 1: //用户登录
+				{
+					userid := main.GetString("userid")
+					if userid == "" {
 						var obj gjson.GJSON
 						obj.SetInt("code", 0)
-						obj.SetString("info", "密码错误")
+						obj.SetString("info", "userid不能为空")
 						c.Write([]byte(obj.ToString()))
+						continue
+					}
+					if user == nil { // 一个socket只能初始化一次用户登录 -- 相当于当前的socket就和user绑定到了一起,有状态的TCP连接
+						passwd := main.GetString("passwd")
+						if passwd == "123456" {
+							user = cache.CreateUser(userid, c)
+							//updateTime = time.Now()
+							cache.UserEnterChannel <- user
+							var obj gjson.GJSON
+							obj.SetInt("code", 1)
+							obj.SetString("info", "ok")
+							c.Write([]byte(obj.ToString()))
+							go UserChannel(user)
+							go UserVaild(c, quitChannel)
+						} else {
+							var obj gjson.GJSON
+							obj.SetInt("code", 0)
+							obj.SetString("info", "密码错误")
+							c.Write([]byte(obj.ToString()))
+						}
 					}
 				}
-			}
-		default:
-			{
-				if user == nil {
-					var obj gjson.GJSON
-					obj.SetInt("code", 0)
-					obj.SetString("info", "请登录")
-					c.Write([]byte(obj.ToString()))
-				} else {
-					if funcid != 2 { // funcid=2 表示心跳包
-						var msgResult gjson.GJSON
-						msgResponse, err := HandleData(&main) //
-						fmt.Println(msgResponse.ToString())
-						if err != nil {
-							msgResult.SetInt("code", 0)
-							msgResult.SetString("info", err.Error())
-						} else {
-							msgResult.SetInt("code", 1)
-							msgResult.SetString("info", "ok")
-							msgResult.SetObject("data", msgResponse)
-						}
+			default:
+				{
+					if user == nil {
+						var obj gjson.GJSON
+						obj.SetInt("code", 0)
+						obj.SetString("info", "请登录")
+						c.Write([]byte(obj.ToString()))
+					} else {
+						if funcid != 2 { // funcid=2 表示心跳包
+							var msgResult gjson.GJSON
+							msgResponse, err := HandleData(&main) //
+							fmt.Println(msgResponse.ToString())
+							if err != nil {
+								msgResult.SetInt("code", 0)
+								msgResult.SetString("info", err.Error())
+							} else {
+								msgResult.SetInt("code", 1)
+								msgResult.SetString("info", "ok")
+								msgResult.SetObject("data", msgResponse)
+							}
 
-						//表示处理后的结果,想要发给哪个用户 -- 使用一个公用的通道,接受数据,然后分发给对应的用户的通道
-						cache.UserMessageChannel <- &cache.MsgData{ID: user.UserID, Data: msgResult.ToString()}
+							//表示处理后的结果,想要发给哪个用户 -- 使用一个公用的通道,接受数据,然后分发给对应的用户的通道
+							cache.UserMessageChannel <- &cache.MsgData{ID: user.UserID, Data: msgResult.ToString()}
+						}
+						if funcid == 2 {
+							fmt.Println("心跳包")
+						}
+						quitChannel <- struct{}{}
 					}
-					if funcid == 2 {
-						fmt.Println("心跳包")
-					}
-					quitChannel <- struct{}{}
 				}
 			}
 		}
+
 	}
 
 	//用户注销

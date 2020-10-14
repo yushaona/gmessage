@@ -6,6 +6,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/yushaona/gmessage/packet"
+
 	"github.com/yushaona/gjson"
 )
 
@@ -20,13 +22,12 @@ func main() {
 	json.SetInt("funcid", 1)
 	json.SetString("userid", "123")
 	json.SetString("passwd", "123456")
-	conn.Write([]byte(json.ToString()))
+	conn.Write(packet.Pack([]byte(json.ToString())))
 
-	time.Sleep(1 * time.Second)
 	var d gjson.GJSON
 	d.SetString("userid", "123")
 	d.SetInt("funcid", 10)
-	conn.Write([]byte(d.ToString()))
+	conn.Write(packet.Pack([]byte(d.ToString())))
 
 	go keeplive(conn)
 
@@ -50,7 +51,7 @@ func keeplive(c net.Conn) {
 		case <-t.C:
 			var json gjson.GJSON
 			json.SetInt("funcid", 2)
-			c.Write([]byte(json.ToString()))
+			c.Write(packet.Pack([]byte(json.ToString())))
 		}
 	}
 }
